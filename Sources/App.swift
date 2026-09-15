@@ -33,11 +33,17 @@ struct BrowserScreen: View {
     @State private var showTabs = false
     @State private var showSettings = false
     @State private var showBookmarks = false
+    @State private var showMods = false
+    @State private var showDevConsole = false
+    @State private var showBlockRules = false
+    @State private var showFind = false
+    @State private var findQuery = ""
     @FocusState private var omniFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             content
+            if showFind { FindBar(model: model, query: $findQuery, shown: $showFind).padding(.top, 6) }
             bottomBar
         }
         .background(Theme.black.ignoresSafeArea())
@@ -46,6 +52,9 @@ struct BrowserScreen: View {
         .sheet(isPresented: $showTabs) { TabsSheet(model: model) }
         .sheet(isPresented: $showSettings) { SettingsSheet(model: model) }
         .sheet(isPresented: $showBookmarks) { BookmarksSheet(model: model) }
+        .sheet(isPresented: $showMods) { ModsSheet() }
+        .sheet(isPresented: $showDevConsole) { DevConsoleSheet(model: model) }
+        .sheet(isPresented: $showBlockRules) { BlockRulesSheet(model: model) }
     }
 
     @ViewBuilder private var content: some View {
@@ -110,16 +119,23 @@ struct BrowserScreen: View {
 
     private var menuButton: some View {
         Menu {
-            Button { showBookmarks = true } label: { Label("Bookmarks", systemImage: "star") }
             Button { model.newTab() } label: { Label("New tab", systemImage: "plus.square") }
+            Button { model.newTab(isPrivate: true); omni = "" } label: { Label("New private tab", systemImage: "eyeglasses") }
             Button { tab.webView.reload() } label: { Label("Reload", systemImage: "arrow.clockwise") }
+            Button { showFind = true } label: { Label("Find in page", systemImage: "magnifyingglass") }
             Button {
                 if let u = tab.webView.url { UIPasteboard.general.string = u.absoluteString }
             } label: { Label("Copy URL", systemImage: "doc.on.doc") }
+            Divider()
+            Button { showBookmarks = true } label: { Label("Bookmarks", systemImage: "star") }
+            Button { showMods = true } label: { Label("Mods", systemImage: "curlybraces") }
+            Button { showBlockRules = true } label: { Label("Block rules", systemImage: "shield") }
+            Button { showDevConsole = true } label: { Label("Dev console", systemImage: "terminal") }
+            Button { model.clearActiveSiteData() } label: { Label("Clear this site's data", systemImage: "trash") }
             Button { showSettings = true } label: { Label("Settings", systemImage: "gearshape") }
         } label: {
             Image(systemName: "ellipsis").font(.system(size: 18, weight: .bold))
-                .foregroundColor(Theme.text).frame(maxWidth: .infinity)
+                .foregroundColor(tab.isPrivate ? Theme.neonRed : Theme.text).frame(maxWidth: .infinity)
         }
     }
 

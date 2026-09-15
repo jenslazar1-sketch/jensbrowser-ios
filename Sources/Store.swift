@@ -17,6 +17,8 @@ final class Store: ObservableObject {
     @Published var searchTemplate: String = "https://duckduckgo.com/?q={q}"
     @Published var desktopMode: Bool = false
     @Published var userAgentOverride: String = ""
+    @Published var blockingEnabled: Bool = true
+    @Published var blockRulesText: String = ""
 
     private init() { load() }
 
@@ -29,6 +31,8 @@ final class Store: ObservableObject {
         searchTemplate = d.string(forKey: "searchTemplate") ?? searchTemplate
         desktopMode = d.bool(forKey: "desktopMode")
         userAgentOverride = d.string(forKey: "userAgentOverride") ?? ""
+        blockingEnabled = d.object(forKey: "blockingEnabled") == nil ? true : d.bool(forKey: "blockingEnabled")
+        blockRulesText = d.string(forKey: "blockRulesText") ?? ""
     }
 
     func save() {
@@ -37,6 +41,8 @@ final class Store: ObservableObject {
         d.set(searchTemplate, forKey: "searchTemplate")
         d.set(desktopMode, forKey: "desktopMode")
         d.set(userAgentOverride, forKey: "userAgentOverride")
+        d.set(blockingEnabled, forKey: "blockingEnabled")
+        d.set(blockRulesText, forKey: "blockRulesText")
     }
 
     func isBookmarked(_ url: String) -> Bool { bookmarks.contains { $0.url == url } }

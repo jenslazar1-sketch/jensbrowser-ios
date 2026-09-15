@@ -6,20 +6,22 @@ import WebKit
 final class Tab: ObservableObject, Identifiable {
     let id = UUID()
     let webView: WKWebView
+    let isPrivate: Bool
     @Published var title: String = "New Tab"
     @Published var urlString: String = ""
     @Published var canGoBack = false
     @Published var canGoForward = false
-    @Published var progress: Double = 0
     @Published var isHome: Bool = true
 
-    init(configuration: WKWebViewConfiguration) {
+    init(configuration: WKWebViewConfiguration, isPrivate: Bool) {
+        self.isPrivate = isPrivate
         webView = WKWebView(frame: .zero, configuration: configuration)
         webView.allowsBackForwardNavigationGestures = true
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         if #available(iOS 15.0, *) { webView.underPageBackgroundColor = UIColor.black }
         webView.isOpaque = false
         webView.backgroundColor = .black
+        if isPrivate { title = "Private Tab" }
     }
 }
 
@@ -27,26 +29,45 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     @Published var tabs: [Tab] = []
     @Published var activeIndex: Int = 0
 
-    let config: WKWebViewConfiguration
+    let consoleLog = ConsoleLog()
+    private(set) var ruleList: WKContentRuleList?
+    private let config: WKWebViewConfiguration
+    private let privateConfig: WKWebViewConfiguration
 
     override init() {
-        let cfg = WKWebViewConfiguration()
+        // Build the two shared configs (persistent + private) up front.
+        config = WKWebViewConfiguration()
+        privateConfig = WKWebViewConfiguration()
+        super.init()
+        setupConfig(config, persistent: true)
+        setupConfig(privateConfig, persistent: false)
+        newTab()
+        compileBlocking()
+    }
+
+    private func setupConfig(_ cfg: WKWebViewConfiguration, persistent: Bool) {
         cfg.allowsInlineMediaPlayback = true
         cfg.mediaTypesRequiringUserActionForPlayback = []
         cfg.defaultWebpagePreferences.allowsContentJavaScript = true
-        self.config = cfg
-        super.init()
-        newTab()
+        if !persistent { cfg.websiteDataStore = .nonPersistent() }
+        let ucc = cfg.userContentController
+        ucc.add(consoleLog, name: "j3nsConsole")
+        ucc.addUserScript(WKUserScript(source: DevConsole.consoleHookJS,
+                                       injectionTime: .atDocumentStart,
+                                       forMainFrameOnly: false))
     }
 
     var activeTab: Tab? { tabs.indices.contains(activeIndex) ? tabs[activeIndex] : nil }
 
+    // MARK: - tabs
+
     @discardableResult
-    func newTab(_ url: URL? = nil) -> Tab {
-        let t = Tab(configuration: config)
+    func newTab(_ url: URL? = nil, isPrivate: Bool = false) -> Tab {
+        let t = Tab(configuration: isPrivate ? privateConfig : config, isPrivate: isPrivate)
         t.webView.navigationDelegate = self
         t.webView.uiDelegate = self
         applyUA(to: t)
+        if let rl = ruleList { t.webView.configuration.userContentController.add(rl) }
         tabs.append(t)
         activeIndex = tabs.count - 1
         if let u = url { load(u, in: t) }
@@ -74,8 +95,10 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         guard let t = activeTab else { return }
         t.isHome = true
         t.urlString = ""
-        t.title = "New Tab"
+        t.title = t.isPrivate ? "Private Tab" : "New Tab"
     }
+
+    // MARK: - settings
 
     func applyUA(to tab: Tab) {
         let s = Store.shared
@@ -92,11 +115,93 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
     func reapplyAllTabSettings() { tabs.forEach { applyUA(to: $0) }; activeTab?.webView.reload() }
 
+    // MARK: - content blocking
+
+    func compileBlocking() {
+        let s = Store.shared
+        guard s.blockingEnabled else { removeBlocking(); return }
+        ContentBlocking.compile(userDomains: ContentBlocking.parseUserDomains(s.blockRulesText)) { [weak self] list in
+            guard let self = self else { return }
+            self.ruleList = list
+            self.config.userContentController.removeAllContentRuleLists()
+            self.privateConfig.userContentController.removeAllContentRuleLists()
+            if let list = list {
+                self.config.userContentController.add(list)
+                self.privateConfig.userContentController.add(list)
+                self.tabs.forEach { $0.webView.configuration.userContentController.add(list) }
+            }
+        }
+    }
+
+    func removeBlocking() {
+        ruleList = nil
+        config.userContentController.removeAllContentRuleLists()
+        privateConfig.userContentController.removeAllContentRuleLists()
+        tabs.forEach { $0.webView.configuration.userContentController.removeAllContentRuleLists() }
+    }
+
+    // MARK: - tools (dev console / god mode)
+
+    func runJS(_ code: String, completion: @escaping (String) -> Void) {
+        activeTab?.webView.evaluateJavaScript(code) { result, error in
+            if let error = error { completion("Error: \(error.localizedDescription)") }
+            else if let result = result { completion(String(describing: result)) }
+            else { completion("undefined") }
+        }
+    }
+
+    func capturePageText(completion: @escaping (String) -> Void) {
+        activeTab?.webView.evaluateJavaScript("document.body ? document.body.innerText : ''") { result, _ in
+            completion((result as? String) ?? "")
+        }
+    }
+
+    func pageInfo(completion: @escaping (String) -> Void) {
+        activeTab?.webView.evaluateJavaScript(DevConsole.pageInfoJS) { result, _ in
+            completion((result as? String) ?? "{}")
+        }
+    }
+
+    func findInPage(_ text: String) {
+        let literal = UserScriptsStore.jsLiteral(text)
+        activeTab?.webView.evaluateJavaScript("window.find ? window.find(\(literal)) : false", completionHandler: nil)
+    }
+
+    func clearActiveSiteData() {
+        guard let host = activeTab?.webView.url?.host else { return }
+        let types = WKWebsiteDataStore.allWebsiteDataTypes()
+        let store = activeTab?.webView.configuration.websiteDataStore ?? .default()
+        store.fetchDataRecords(ofTypes: types) { records in
+            let mine = records.filter { $0.displayName.contains(host) || host.contains($0.displayName) }
+            store.removeData(ofTypes: types, for: mine) {}
+        }
+    }
+
+    func clearAllSiteData(completion: @escaping () -> Void) {
+        let types = WKWebsiteDataStore.allWebsiteDataTypes()
+        WKWebsiteDataStore.default().removeData(ofTypes: types, modifiedSince: Date(timeIntervalSince1970: 0)) {
+            completion()
+        }
+    }
+
     // MARK: - WKNavigationDelegate
+
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) { sync(webView) }
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { sync(webView) }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { sync(webView) }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { sync(webView) }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        sync(webView)
+        injectMods(into: webView)
+    }
+
+    private func injectMods(into webView: WKWebView) {
+        guard let tab = tabs.first(where: { $0.webView === webView }), !tab.isPrivate,
+              let host = webView.url?.host else { return }
+        for mod in UserScriptsStore.shared.matching(host: host) {
+            webView.evaluateJavaScript(UserScriptsStore.injectionJS(for: mod), completionHandler: nil)
+        }
+    }
 
     private func sync(_ webView: WKWebView) {
         guard let t = tabs.first(where: { $0.webView === webView }) else { return }
@@ -110,12 +215,14 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     }
 
     // MARK: - WKUIDelegate: open target=_blank in a new tab
+
     func webView(_ webView: WKWebView,
                  createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction,
                  windowFeatures: WKWindowFeatures) -> WKWebView? {
         if navigationAction.targetFrame == nil, let url = navigationAction.request.url {
-            newTab(url)
+            let priv = tabs.first(where: { $0.webView === webView })?.isPrivate ?? false
+            newTab(url, isPrivate: priv)
         }
         return nil
     }
