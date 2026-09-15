@@ -38,6 +38,7 @@ struct BrowserScreen: View {
     @State private var showBlockRules = false
     @State private var showFind = false
     @State private var findQuery = ""
+    @State private var showBot = false
     @FocusState private var omniFocused: Bool
 
     var body: some View {
@@ -55,6 +56,7 @@ struct BrowserScreen: View {
         .sheet(isPresented: $showMods) { ModsSheet() }
         .sheet(isPresented: $showDevConsole) { DevConsoleSheet(model: model) }
         .sheet(isPresented: $showBlockRules) { BlockRulesSheet(model: model) }
+        .sheet(isPresented: $showBot) { BotSheet(model: model) }
     }
 
     @ViewBuilder private var content: some View {
@@ -119,6 +121,8 @@ struct BrowserScreen: View {
 
     private var menuButton: some View {
         Menu {
+            Button { showBot = true } label: { Label("j3nsontop bot", systemImage: "sparkles") }
+            Divider()
             Button { model.newTab() } label: { Label("New tab", systemImage: "plus.square") }
             Button { model.newTab(isPrivate: true); omni = "" } label: { Label("New private tab", systemImage: "eyeglasses") }
             Button { tab.webView.reload() } label: { Label("Reload", systemImage: "arrow.clockwise") }
